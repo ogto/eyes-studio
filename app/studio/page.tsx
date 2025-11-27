@@ -13,6 +13,14 @@ type Capture = {
   createdAt: number;
 };
 
+type EyebrowStyle = {
+  id: string;
+  name: string;
+  color: string;   // rgba 또는 hex
+  thickness: number; // 두께(1 ~ 3 정도)
+  offsetY: number;   // y축 오프셋 (음수면 약간 위로 올라감)
+};
+
 export default function StudioPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -24,6 +32,46 @@ export default function StudioPage() {
   const [landmarkerReady, setLandmarkerReady] = useState(false);
   const [captures, setCaptures] = useState<Capture[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // 👉 눈썹 템플릿 목록
+  const [styles] = useState<EyebrowStyle[]>([
+    {
+      id: "natural",
+      name: "내추럴",
+      color: "rgba(60, 40, 30, 0.75)",
+      thickness: 1.0,
+      offsetY: 0.0,
+    },
+    {
+      id: "soft-flat",
+      name: "소프트 일자",
+      color: "rgba(45, 35, 28, 0.82)",
+      thickness: 1.3,
+      offsetY: -0.003,
+    },
+    {
+      id: "flat",
+      name: "선명 일자",
+      color: "rgba(30, 22, 18, 0.88)",
+      thickness: 1.6,
+      offsetY: -0.006,
+    },
+    {
+      id: "arch",
+      name: "아치",
+      color: "rgba(55, 35, 25, 0.85)",
+      thickness: 1.4,
+      offsetY: -0.01,
+    },
+    {
+      id: "strong-arch",
+      name: "강한 아치",
+      color: "rgba(25, 18, 14, 0.9)",
+      thickness: 1.9,
+      offsetY: -0.014,
+    },
+  ]);
+  const [selectedStyleId, setSelectedStyleId] = useState<string>("natural");
 
   // 1) 카메라 켜기
   useEffect(() => {
@@ -64,7 +112,6 @@ export default function StudioPage() {
     const initLandmarker = async () => {
       try {
         const vision = await FilesetResolver.forVisionTasks(
-          // 버전 올라가면 이 경로만 최신으로 교체하면 됨
           "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
         );
 
@@ -88,7 +135,7 @@ export default function StudioPage() {
     initLandmarker();
   }, []);
 
-  // 3) 비디오 → 캔버스 렌더 + 얼굴/눈썹 오버레이
+  // 3) 비디오 → 캔버스 렌더 + 눈썹 오버레이
   useEffect(() => {
     if (!cameraReady || !videoRef.current || !canvasRef.current) return;
 
@@ -120,7 +167,6 @@ export default function StudioPage() {
       if (!landmarkerRef.current || !landmarkerReady) return;
 
       const nowInMs = performance.now();
-      // 동일 타임스탬프 중복 호출 방지
       if (lastVideoTimeRef.current === nowInMs) return;
       lastVideoTimeRef.current = nowInMs;
 
@@ -130,15 +176,17 @@ export default function StudioPage() {
       if (!result.faceLandmarks || result.faceLandmarks.length === 0) return;
 
       const landmarks = result.faceLandmarks[0];
+      const style =
+        styles.find((s) => s.id === selectedStyleId) ?? styles[0];
 
-      // 3. 눈썹 오버레이
-      drawEyebrows(ctx, landmarks);
+      // 3. 현재 선택된 스타일로 눈썹 그리기
+      drawEyebrows(ctx, landmarks, style);
     };
 
     render();
 
     return () => cancelAnimationFrame(frameId);
-  }, [cameraReady, landmarkerReady]);
+  }, [cameraReady, landmarkerReady, selectedStyleId, styles]);
 
   // 4) 캡처
   const handleCapture = () => {
@@ -153,7 +201,7 @@ export default function StudioPage() {
         반영구 눈썹 시뮬레이터 – 스튜디오 MVP
       </h1>
       <p className="text-sm text-white/65 mb-4">
-        웹캠 + 얼굴 인식 + 눈썹 영역 오버레이까지 붙인 최소 기능 버전.
+        실시간 카메라 + 템플릿 선택으로 바로 스타일 비교.
       </p>
 
       {errorMsg && (
@@ -168,6 +216,29 @@ export default function StudioPage() {
         <canvas ref={canvasRef} className="w-full h-full" />
       </div>
 
+      {/* 👉 템플릿 선택 패널 */}
+      <section className="mt-4 w-full max-w-md">
+        <h2 className="text-xs font-medium text-white/60 mb-2">
+          눈썹 템플릿 선택
+        </h2>
+        <div className="flex flex-wrap gap-2">
+          {styles.map((style) => (
+            <button
+              key={style.id}
+              onClick={() => setSelectedStyleId(style.id)}
+              className={`px-3 py-1.5 rounded-full text-xs border transition
+              ${
+                selectedStyleId === style.id
+                  ? "border-emerald-400 bg-emerald-500/10 text-emerald-200"
+                  : "border-white/20 bg-white/5 text-white/80"
+              }`}
+            >
+              {style.name}
+            </button>
+          ))}
+        </div>
+      </section>
+
       <button
         onClick={handleCapture}
         disabled={!cameraReady}
@@ -177,7 +248,7 @@ export default function StudioPage() {
       </button>
 
       <p className="mt-2 text-xs text-white/50">
-        얼굴 인식 모델 상태: {landmarkerReady ? "로드 완료" : "로딩 중..."}
+        얼굴 인식 모델: {landmarkerReady ? "로드 완료" : "로딩 중..."}
       </p>
 
       {captures.length > 0 && (
@@ -201,43 +272,74 @@ export default function StudioPage() {
   );
 }
 
-/**
- * 눈썹 인덱스는 MediaPipe FaceMesh 기준 예시다.
- * 실제 인덱스는 얼굴에 맞게 조정해가면서 튜닝해야 한다.
- * (대략적인 영역만 잡는 용도)
- */
+/** ===== 눈썹 그리기 유틸 ===== */
+
+// 대략적인 MediaPipe FaceMesh 인덱스
 const LEFT_EYEBROW = [52, 65, 55, 107, 66, 105, 63, 70, 156];
 const RIGHT_EYEBROW = [282, 295, 285, 336, 296, 334, 293, 300, 383];
 
 function drawEyebrows(
   ctx: CanvasRenderingContext2D,
-  landmarks: { x: number; y: number; z?: number }[]
+  landmarks: { x: number; y: number; z?: number }[],
+  style: EyebrowStyle
 ) {
-  // 기본 색/투명도는 나중에 스타일 패널로 뺄 예정
-  drawOneSide(ctx, landmarks, LEFT_EYEBROW, "rgba(60, 40, 30, 0.8)");
-  drawOneSide(ctx, landmarks, RIGHT_EYEBROW, "rgba(60, 40, 30, 0.8)");
+  drawOneSide(ctx, landmarks, LEFT_EYEBROW, style);
+  drawOneSide(ctx, landmarks, RIGHT_EYEBROW, style);
 }
 
 function drawOneSide(
   ctx: CanvasRenderingContext2D,
   landmarks: { x: number; y: number }[],
   indices: number[],
-  color: string
+  style: EyebrowStyle
 ) {
   if (!indices.length) return;
 
-  ctx.fillStyle = color;
+  ctx.fillStyle = style.color;
+
+  // thickness를 이용해 약간 넓게 덮기 위해 shadow 효과 비슷하게 사용
+  ctx.save();
+  ctx.filter = "blur(0.6px)";
+
   ctx.beginPath();
 
   indices.forEach((i, idx) => {
     const lm = landmarks[i];
     if (!lm) return;
+
     const x = lm.x * ctx.canvas.width;
-    const y = lm.y * ctx.canvas.height;
+    const y =
+      (lm.y + style.offsetY) * ctx.canvas.height; // offsetY로 살짝 위/아래 조정
+
     if (idx === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
 
   ctx.closePath();
   ctx.fill();
+
+  // thickness 값으로 한 번 더 덮어서 두께 조절
+  if (style.thickness > 1) {
+    const scale = 1 + (style.thickness - 1) * 0.06; // 과하지 않게
+    ctx.beginPath();
+    indices.forEach((i, idx) => {
+      const lm = landmarks[i];
+      if (!lm) return;
+      const cx = 0.5 * ctx.canvas.width;
+      const cy = 0.4 * ctx.canvas.height;
+
+      const baseX = lm.x * ctx.canvas.width;
+      const baseY = (lm.y + style.offsetY) * ctx.canvas.height;
+
+      const x = cx + (baseX - cx) * scale;
+      const y = cy + (baseY - cy) * scale;
+
+      if (idx === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  ctx.restore();
 }
