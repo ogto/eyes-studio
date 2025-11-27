@@ -274,72 +274,123 @@ export default function StudioPage() {
 
 /** ===== 눈썹 그리기 유틸 ===== */
 
-// 대략적인 MediaPipe FaceMesh 인덱스
+/** ===== 눈썹 그리기 유틸 (자연스럽게 리뉴얼) ===== */
+
+// 대략적인 MediaPipe FaceMesh 인덱스 (양쪽 눈썹 라인)
 const LEFT_EYEBROW = [52, 65, 55, 107, 66, 105, 63, 70, 156];
 const RIGHT_EYEBROW = [282, 295, 285, 336, 296, 334, 293, 300, 383];
+
+// 스타일별 아치 강도 설정
+function getArchStrength(styleId: string): number {
+  switch (styleId) {
+    case "natural":
+      return 0.0;    // 거의 일자
+    case "soft-flat":
+      return 0.003;  // 아주 살짝
+    case "flat":
+      return 0.0015; // 거의 평평
+    case "arch":
+      return 0.007;  // 기본 아치
+    case "strong-arch":
+      return 0.011;  // 강한 아치
+    default:
+      return 0.003;
+  }
+}
 
 function drawEyebrows(
   ctx: CanvasRenderingContext2D,
   landmarks: { x: number; y: number; z?: number }[],
-  style: EyebrowStyle
+  style: { id: string; color: string; thickness: number; offsetY: number }
 ) {
-  drawOneSide(ctx, landmarks, LEFT_EYEBROW, style);
-  drawOneSide(ctx, landmarks, RIGHT_EYEBROW, style);
+  drawOneSide(ctx, landmarks, LEFT_EYEBROW, style, "L");
+  drawOneSide(ctx, landmarks, RIGHT_EYEBROW, style, "R");
 }
 
 function drawOneSide(
   ctx: CanvasRenderingContext2D,
   landmarks: { x: number; y: number }[],
   indices: number[],
-  style: EyebrowStyle
+  style: { id: string; color: string; thickness: number; offsetY: number },
+  side: "L" | "R"
 ) {
   if (!indices.length) return;
 
-  ctx.fillStyle = style.color;
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
 
-  // thickness를 이용해 약간 넓게 덮기 위해 shadow 효과 비슷하게 사용
-  ctx.save();
-  ctx.filter = "blur(0.6px)";
+  // 기본 두께 (얼굴 크기 기준) + 스타일별 가중치
+  const baseWidth = h * 0.012; // 대략 1.2% 정도
+  const lineWidth = baseWidth * style.thickness;
 
-  ctx.beginPath();
+  const archStrength = getArchStrength(style.id); // 아치 강도
+  const offsetYpx = style.offsetY * h;            // 스타일별 전체 y 오프셋
 
-  indices.forEach((i, idx) => {
+  // 원본 포인트들을 캔버스 좌표로 변환 + 아치 적용
+  const points: { x: number; y: number }[] = indices.map((i, idx) => {
     const lm = landmarks[i];
-    if (!lm) return;
+    if (!lm) return { x: 0, y: 0 };
 
-    const x = lm.x * ctx.canvas.width;
-    const y =
-      (lm.y + style.offsetY) * ctx.canvas.height; // offsetY로 살짝 위/아래 조정
+    const t =
+      indices.length === 1 ? 0.5 : idx / (indices.length - 1); // 0 ~ 1 구간
 
-    if (idx === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+    let x = lm.x * w;
+    let y = lm.y * h + offsetYpx;
+
+    // 스타일별 아치 적용 (가운데가 가장 많이 올라가도록)
+    const arch = -archStrength * h * Math.sin(Math.PI * t);
+    y += arch;
+
+    return { x, y };
   });
 
-  ctx.closePath();
-  ctx.fill();
+  // 곡선을 부드럽게 만들기 위해 quadraticCurveTo 사용
+  const smoothPath = (pts: { x: number; y: number }[]) => {
+    if (pts.length < 2) return;
 
-  // thickness 값으로 한 번 더 덮어서 두께 조절
-  if (style.thickness > 1) {
-    const scale = 1 + (style.thickness - 1) * 0.06; // 과하지 않게
     ctx.beginPath();
-    indices.forEach((i, idx) => {
-      const lm = landmarks[i];
-      if (!lm) return;
-      const cx = 0.5 * ctx.canvas.width;
-      const cy = 0.4 * ctx.canvas.height;
+    ctx.moveTo(pts[0].x, pts[0].y);
 
-      const baseX = lm.x * ctx.canvas.width;
-      const baseY = (lm.y + style.offsetY) * ctx.canvas.height;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const curr = pts[i];
+      const next = pts[i + 1];
+      const midX = (curr.x + next.x) / 2;
+      const midY = (curr.y + next.y) / 2;
+      ctx.quadraticCurveTo(curr.x, curr.y, midX, midY);
+    }
 
-      const x = cx + (baseX - cx) * scale;
-      const y = cy + (baseY - cy) * scale;
+    // 마지막 포인트까지 마무리
+    const last = pts[pts.length - 1];
+    ctx.lineTo(last.x, last.y);
+  };
 
-      if (idx === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.closePath();
-    ctx.fill();
-  }
+  ctx.save();
+
+  // 약간 블러를 줘서 테두리가 너무 딱딱하지 않게
+  ctx.filter = "blur(0.6px)";
+  ctx.strokeStyle = style.color;
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  // 1차 메인 스트로크
+  smoothPath(points);
+  ctx.stroke();
+
+  // 두께를 조금 더 자연스럽게 만들기 위해,
+  // 살짝 위/아래로 한 번씩 더 그려서 “모”가 있는 느낌을 준다.
+  const spread = lineWidth * 0.18;
+
+  const shiftedUp = points.map((p) => ({ x: p.x, y: p.y - spread }));
+  const shiftedDown = points.map((p) => ({ x: p.x, y: p.y + spread }));
+
+  ctx.globalAlpha = 0.8;
+  smoothPath(shiftedUp);
+  ctx.stroke();
+
+  ctx.globalAlpha = 0.7;
+  smoothPath(shiftedDown);
+  ctx.stroke();
 
   ctx.restore();
 }
